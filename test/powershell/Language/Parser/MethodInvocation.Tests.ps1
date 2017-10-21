@@ -79,3 +79,9 @@ namespace MSFT_716893
         ([MSFT_716893.IInterface1]$proxy).BaseOperation(22) | Should Be "3 - 22"
     }
 }
+
+Describe 'Generic Method invocation' {
+    It 'Does not throw a parse error' {
+        { $sb = [scriptblock]::Create('[Array]::Empty[string]()') } | Should Not Throw
+    }
+}
