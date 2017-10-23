@@ -7456,10 +7456,11 @@ namespace System.Management.Automation.Language
         /// <param name="static">True if the '::' operator was used, false if '.' is used.
         /// True if the member access is for a static member, using '::', false if accessing a member on an instance using '.'.
         /// </param>
+        /// <param name="genericTypes">The generic type arguments passed to the property.</param>
         /// <exception cref="PSArgumentNullException">
         /// If <paramref name="extent"/>, <paramref name="expression"/>, or <paramref name="member"/> is null.
         /// </exception>
-        public MemberExpressionAst(IScriptExtent extent, ExpressionAst expression, CommandElementAst member, bool @static)
+        public MemberExpressionAst(IScriptExtent extent, ExpressionAst expression, CommandElementAst member, bool @static, IEnumerable<ITypeName> genericTypes = null)
             : base(extent)
         {
             if (expression == null || member == null)
@@ -7472,6 +7473,11 @@ namespace System.Management.Automation.Language
             this.Member = member;
             SetParent(member);
             this.Static = @static;
+
+            if (null != genericTypes && genericTypes.Any())
+            {
+                this.GenericTypeArguments = new ReadOnlyCollection<ITypeName>(genericTypes.ToArray());
+            }
         }
 
         /// <summary>
@@ -7490,13 +7496,18 @@ namespace System.Management.Automation.Language
         public bool Static { get; private set; }
 
         /// <summary>
+        /// List of generic type arguments passed to this member.
+        /// </summary>
+        public ReadOnlyCollection<ITypeName> GenericTypeArguments { get; private set; }
+
+        /// <summary>
         /// Copy the MemberExpressionAst instance
         /// </summary>
         public override Ast Copy()
         {
             var newExpression = CopyElement(this.Expression);
             var newMember = CopyElement(this.Member);
-            return new MemberExpressionAst(this.Extent, newExpression, newMember, this.Static);
+            return new MemberExpressionAst(this.Extent, newExpression, newMember, this.Static, this.GenericTypeArguments);
         }
 
         #region Visitors
@@ -7544,11 +7555,12 @@ namespace System.Management.Automation.Language
         /// <param name="static">
         /// True if the invocation is for a static method, using '::', false if invoking a method on an instance using '.'.
         /// </param>
+        /// <param name="genericTypes">The generic type arguments passed to the method.</param>
         /// <exception cref="PSArgumentNullException">
         /// If <paramref name="extent"/> is null.
         /// </exception>
-        public InvokeMemberExpressionAst(IScriptExtent extent, ExpressionAst expression, CommandElementAst method, IEnumerable<ExpressionAst> arguments, bool @static)
-            : base(extent, expression, method, @static)
+        public InvokeMemberExpressionAst(IScriptExtent extent, ExpressionAst expression, CommandElementAst method, IEnumerable<ExpressionAst> arguments, bool @static, IEnumerable<ITypeName> genericTypes = null)
+            : base(extent, expression, method, @static, genericTypes)
         {
             if (arguments != null && arguments.Any())
             {
@@ -7570,7 +7582,7 @@ namespace System.Management.Automation.Language
             var newExpression = CopyElement(this.Expression);
             var newMethod = CopyElement(this.Member);
             var newArguments = CopyElements(this.Arguments);
-            return new InvokeMemberExpressionAst(this.Extent, newExpression, newMethod, newArguments, this.Static);
+            return new InvokeMemberExpressionAst(this.Extent, newExpression, newMethod, newArguments, this.Static, this.GenericTypeArguments);
         }
 
         #region Visitors

@@ -753,6 +753,7 @@ namespace System.Management.Automation.Language
 
         #endregion Utilities
 
+
         #region Statements
 
         private ScriptBlockAst ScriptBlockRule(Token lCurly, bool isFilter)
@@ -1370,7 +1371,7 @@ namespace System.Management.Automation.Language
             return typeName;
         }
 
-        private ITypeName GenericTypeArgumentsRule(Token genericTypeName, Token firstToken, bool unBracketedGenericArg)
+        private List<ITypeName> GenericArgumentsRule(Token firstToken, bool unBracketedGenericArg, out Token lastToken)
         {
             Diagnostics.Assert(firstToken.Kind == TokenKind.Identifier || firstToken.Kind == TokenKind.LBracket, "unexpected first token");
             RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -1379,13 +1380,12 @@ namespace System.Management.Automation.Language
             ITypeName typeName = GetSingleGenericArgument(firstToken);
             genericArguments.Add(typeName);
 
-            Token commaOrRBracketToken;
             Token token;
             while (true)
             {
                 V3SkipNewlines();
-                commaOrRBracketToken = NextToken();
-                if (commaOrRBracketToken.Kind != TokenKind.Comma)
+                lastToken = NextToken();
+                if (lastToken.Kind != TokenKind.Comma)
                 {
                     break;
                 }
@@ -1399,26 +1399,35 @@ namespace System.Management.Automation.Language
                 }
                 else
                 {
-                    ReportIncompleteInput(After(commaOrRBracketToken), () => ParserStrings.MissingTypename);
-                    typeName = new TypeName(commaOrRBracketToken.Extent, ":ErrorTypeName:");
+                    ReportIncompleteInput(After(lastToken), () => ParserStrings.MissingTypename);
+                    typeName = new TypeName(lastToken.Extent, ":ErrorTypeName:");
                 }
                 genericArguments.Add(typeName);
             }
 
-            if (commaOrRBracketToken.Kind != TokenKind.RBracket)
+            return genericArguments;
+        }
+
+        private ITypeName GenericTypeArgumentsRule(Token genericTypeName, Token firstToken, bool unBracketedGenericArg)
+        {
+            Token rBracketToken;
+            List<ITypeName> genericArguments = GenericArgumentsRule(firstToken, unBracketedGenericArg, out rBracketToken);
+
+            if (rBracketToken.Kind != TokenKind.RBracket)
             {
                 // ErrorRecovery: pretend we had the closing bracket and just continue on.
 
-                UngetToken(commaOrRBracketToken);
-                ReportIncompleteInput(Before(commaOrRBracketToken),
+                UngetToken(rBracketToken);
+                ReportIncompleteInput(Before(rBracketToken),
                     () => ParserStrings.EndSquareBracketExpectedAtEndOfAttribute);
-                commaOrRBracketToken = null;
+                rBracketToken = null;
             }
 
             var openGenericType = new TypeName(genericTypeName.Extent, genericTypeName.Text);
-            var result = new GenericTypeName(ExtentOf(genericTypeName.Extent, ExtentFromFirstOf(commaOrRBracketToken, genericArguments.LastOrDefault(), firstToken)),
+            var result = new GenericTypeName(ExtentOf(genericTypeName.Extent, ExtentFromFirstOf(rBracketToken, genericArguments.LastOrDefault(), firstToken)),
                 openGenericType, genericArguments);
-            token = PeekToken();
+
+            Token token = PeekToken();
             if (token.Kind == TokenKind.LBracket)
             {
                 SkipToken();
@@ -6651,6 +6660,10 @@ namespace System.Management.Automation.Language
             // On entry, we've verified that operatorToken is not preceded by whitespace.
 
             CommandElementAst member = MemberNameRule();
+            Ast lastBeforeLParen = member;
+            List<ITypeName> genericTypes = null;
+            ITypeName lastGenericType = null;
+            Token rBracket = null;
 
             if (member == null)
             {
@@ -6663,21 +6676,62 @@ namespace System.Management.Automation.Language
             }
             else
             {
+                int resyncIndex = _tokenizer.GetRestorePoint();
+                Token lBracket = NextToken();
+
+                if (lBracket.Kind == TokenKind.LBracket)
+                {
+                    // This is either a member expression with generic type arguments, or some sort of collection index on a property.
+
+                    var oldTokenizerMode = _tokenizer.Mode;
+                    try
+                    {
+                        // Switch to typename mode to avoid aggressive argument tokenization.
+                        SetTokenizerMode(TokenizerMode.TypeName);
+
+                        Token firstToken = NextToken();
+                        if (firstToken.Kind == TokenKind.Identifier || firstToken.Kind == TokenKind.LBracket)
+                        {
+                            resyncIndex = -1;
+                            genericTypes = GenericArgumentsRule(firstToken, false, out rBracket);
+                            lastGenericType = genericTypes.Last();
+                            if (rBracket.Kind != TokenKind.RBracket)
+                            {
+                                ReportIncompleteInput(Before(rBracket), () => ParserStrings.EndSquareBracketExpectedAtEndOfType);
+                                resyncIndex = lastGenericType.Extent.EndOffset;
+
+                                rBracket = null;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        SetTokenizerMode(oldTokenizerMode);
+                    }
+                }
+
+                if (resyncIndex > 0)
+                {
+                    Resync(resyncIndex);
+                }
+
                 Token lParen = NextInvokeMemberToken();
                 if (lParen != null)
                 {
+                    int endColumnNumber = rBracket?.Extent?.EndColumnNumber ?? member.Extent.EndColumnNumber;
+
                     Diagnostics.Assert(lParen.Kind == TokenKind.LParen || lParen.Kind == TokenKind.LCurly, "token kind incorrect");
-                    Diagnostics.Assert(member.Extent.EndColumnNumber == lParen.Extent.StartColumnNumber,
+                    Diagnostics.Assert(endColumnNumber == lParen.Extent.StartColumnNumber,
                                        "member and paren must be adjacent");
-                    return MemberInvokeRule(targetExpr, lParen, operatorToken, member);
+                    return MemberInvokeRule(targetExpr, lParen, operatorToken, member, genericTypes);
                 }
             }
 
-            return new MemberExpressionAst(ExtentOf(targetExpr, member),
-                targetExpr, member, operatorToken.Kind == TokenKind.ColonColon);
+            return new MemberExpressionAst(ExtentOf(targetExpr, ExtentFromFirstOf(rBracket, lastGenericType, member)),
+                targetExpr, member, operatorToken.Kind == TokenKind.ColonColon, genericTypes);
         }
 
-        private ExpressionAst MemberInvokeRule(ExpressionAst targetExpr, Token lBracket, Token operatorToken, CommandElementAst member)
+        private ExpressionAst MemberInvokeRule(ExpressionAst targetExpr, Token lBracket, Token operatorToken, CommandElementAst member, IEnumerable<ITypeName> genericTypes)
         {
             //G  invocation-expression: target-expression passed as a parameter. lBracket can be '(' or '{'.
             //G      target-expression   member-name   invoke-param-list
@@ -6702,7 +6756,7 @@ namespace System.Management.Automation.Language
                 lastExtent = argument.Extent;
             }
 
-            return new InvokeMemberExpressionAst(ExtentOf(targetExpr, lastExtent), targetExpr, member, arguments, operatorToken.Kind == TokenKind.ColonColon);
+            return new InvokeMemberExpressionAst(ExtentOf(targetExpr, lastExtent), targetExpr, member, arguments, operatorToken.Kind == TokenKind.ColonColon, genericTypes);
         }
 
         private List<ExpressionAst> InvokeParamParenListRule(Token lParen, out IScriptExtent lastExtent)

@@ -743,7 +743,7 @@ namespace System.Management.Automation.Language
         {
             Diagnostics.Assert(0 <= _currentIndex && _currentIndex <= _script.Length, "PeekChar out of range.");
 
-            if (_currentIndex == _script.Length)
+            if (_currentIndex >= _script.Length)
             {
                 return '\0';
             }
